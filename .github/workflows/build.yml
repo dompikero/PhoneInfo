@@ -5,21 +5,57 @@ on: [push, workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Unzip project if needed
+      - name: Unpack project ZIP if needed
         shell: bash
         run: |
-          if [ -f PhoneInfo.zip ]; then
-            echo "PhoneInfo.zip bulundu, açılıyor..."
-            unzip -oq PhoneInfo.zip
-          else
-            echo "PhoneInfo.zip yok; depodaki dosyalarla devam ediliyor."
+          set -euo pipefail
+
+          SETTINGS_FILE="$(find . -type f \( \
+            -name 'settings.gradle' -o \
+            -name 'settings.gradle.kts' \) \
+            -not -path './.git/*' \
+            -not -path '*/build/*' \
+            -not -path '*/.gradle/*' \
+            -print -quit || true)"
+
+          if [ -n "$SETTINGS_FILE" ]; then
+            echo "Gradle project found: $SETTINGS_FILE"
+            exit 0
           fi
-          echo "=== Kök dizin ==="
-          ls -la
+
+          ZIP_PATH=""
+          for candidate in PhoneInfo.zip PhoneInfo-fixed2.zip PhoneInfo-fixed.zip; do
+            if [ -f "$candidate" ]; then
+              ZIP_PATH="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$ZIP_PATH" ]; then
+            ZIP_PATH="$(find . -type f -name '*.zip' \
+              -not -path './.git/*' -print -quit || true)"
+          fi
+
+          if [ -z "$ZIP_PATH" ]; then
+            echo "ERROR: No Gradle project or ZIP archive found."
+            ls -la
+            exit 1
+          fi
+
+          echo "Unpacking: $ZIP_PATH"
+          unzip -oq "$ZIP_PATH" -d .
+
+          find . -type f \( \
+            -name 'settings.gradle' -o \
+            -name 'settings.gradle.kts' \) \
+            -not -path './.git/*' -print
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -32,52 +68,65 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Find project directory
+      - name: Find Gradle project directory
         id: find
         shell: bash
         run: |
-          if [ -f PhoneInfo/settings.gradle.kts ]; then
-            echo "dir=PhoneInfo" >> "$GITHUB_OUTPUT"
-            echo "Proje dizini: PhoneInfo/"
-          elif [ -f settings.gradle.kts ]; then
-            echo "dir=." >> "$GITHUB_OUTPUT"
-            echo "Proje dizini: kök dizin"
-          else
-            echo "HATA: Gradle projesi bulunamadı."
-            find . \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -print
+          set -euo pipefail
+
+          SETTINGS_FILE="$(find . -type f \( \
+            -name 'settings.gradle' -o \
+            -name 'settings.gradle.kts' \) \
+            -not -path './.git/*' \
+            -not -path '*/build/*' \
+            -not -path '*/.gradle/*' \
+            -print -quit || true)"
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: Gradle settings file not found."
+            find . -maxdepth 5 -type f -print | sort | head -200
             exit 1
           fi
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Project directory: $PROJECT_DIR"
 
       - name: Enable AndroidX
         shell: bash
         run: |
-          DIR="${{ steps.find.outputs.dir }}"
-          FILE="$DIR/gradle.properties"
+          set -euo pipefail
+
+          PROJECT_DIR="${{ steps.find.outputs.dir }}"
+          FILE="$PROJECT_DIR/gradle.properties"
           touch "$FILE"
 
-          if grep -q '^android.useAndroidX=' "$FILE"; then
+          if grep -q '^android\.useAndroidX=' "$FILE"; then
             sed -i 's/^android\.useAndroidX=.*/android.useAndroidX=true/' "$FILE"
           else
             printf '\nandroid.useAndroidX=true\n' >> "$FILE"
           fi
 
-          echo "AndroidX ayarı:"
-          grep '^android.useAndroidX=' "$FILE"
+          cat "$FILE"
 
-      - name: Fix maxRange compatibility (safe)
+      - name: Fix maxRange compatibility
         shell: bash
         run: |
-          DIR="${{ steps.find.outputs.dir }}"
-          FILE="$DIR/app/src/main/java/com/eren/phoneinfo/MainActivity.kt"
+          set -euo pipefail
+
+          PROJECT_DIR="${{ steps.find.outputs.dir }}"
+          FILE="$PROJECT_DIR/app/src/main/java/com/eren/phoneinfo/MainActivity.kt"
+
           if [ -f "$FILE" ]; then
-            sed -i 's/s\.maxRange/s.maximumRange/g' "$FILE" || true
+            sed -i 's/s\.maxRange/s.maximumRange/g' "$FILE"
           fi
 
       - name: Build Debug APK
         shell: bash
         run: |
+          set -euo pipefail
           cd "${{ steps.find.outputs.dir }}"
-          gradle assembleDebug
+          gradle --no-daemon assembleDebug
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
