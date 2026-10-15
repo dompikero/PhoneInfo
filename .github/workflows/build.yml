@@ -1,0 +1,87 @@
+
+name: Build APK
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unzip project if needed
+        shell: bash
+        run: |
+          if [ -f PhoneInfo.zip ]; then
+            echo "PhoneInfo.zip bulundu, açılıyor..."
+            unzip -oq PhoneInfo.zip
+          else
+            echo "PhoneInfo.zip yok; depodaki dosyalarla devam ediliyor."
+          fi
+          echo "=== Kök dizin ==="
+          ls -la
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Find project directory
+        id: find
+        shell: bash
+        run: |
+          if [ -f PhoneInfo/settings.gradle.kts ]; then
+            echo "dir=PhoneInfo" >> "$GITHUB_OUTPUT"
+            echo "Proje dizini: PhoneInfo/"
+          elif [ -f settings.gradle.kts ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+            echo "Proje dizini: kök dizin"
+          else
+            echo "HATA: Gradle projesi bulunamadı."
+            find . \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -print
+            exit 1
+          fi
+
+      - name: Enable AndroidX
+        shell: bash
+        run: |
+          DIR="${{ steps.find.outputs.dir }}"
+          FILE="$DIR/gradle.properties"
+          touch "$FILE"
+
+          if grep -q '^android.useAndroidX=' "$FILE"; then
+            sed -i 's/^android\.useAndroidX=.*/android.useAndroidX=true/' "$FILE"
+          else
+            printf '\nandroid.useAndroidX=true\n' >> "$FILE"
+          fi
+
+          echo "AndroidX ayarı:"
+          grep '^android.useAndroidX=' "$FILE"
+
+      - name: Fix maxRange compatibility (safe)
+        shell: bash
+        run: |
+          DIR="${{ steps.find.outputs.dir }}"
+          FILE="$DIR/app/src/main/java/com/eren/phoneinfo/MainActivity.kt"
+          if [ -f "$FILE" ]; then
+            sed -i 's/s\.maxRange/s.maximumRange/g' "$FILE" || true
+          fi
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          cd "${{ steps.find.outputs.dir }}"
+          gradle assembleDebug
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhoneInfo-apk
+          path: '**/app/build/outputs/apk/debug/app-debug.apk'
+          if-no-files-found: error
